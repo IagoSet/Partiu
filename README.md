@@ -19,8 +19,8 @@ Passos para rodar (clone → rodar)
 
 Clone o repositório:
 
-git clone <URL_DO_REPO>
-cd nome-do-repo
+git clone (https://github.com/IagoSet/Partiu)
+cd Partiu
 
 
 Instale dependências:
