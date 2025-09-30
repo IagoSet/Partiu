@@ -1,9 +1,11 @@
 // App.js
 import React, { useEffect, useState } from "react";
-import { StyleSheet, View, Text, ActivityIndicator, Alert, TouchableOpacity } from "react-native";
-import MapView, { Marker, UrlTile } from "react-native-maps";
+import { StyleSheet, View, Text, Alert, TouchableOpacity } from "react-native";
+import MapView, { Marker, UrlTile, Polyline } from "react-native-maps";
 
 const OVERPASS_API = "https://overpass-api.de/api/interpreter";
+// Servidor público OSRM (cuidado: tem limite de uso, para produção é melhor hospedar o seu)
+const OSRM_API = "https://router.project-osrm.org/route/v1/driving";
 
 // Bounding Box do Plano Piloto
 const BBOX = {
@@ -16,6 +18,11 @@ const BBOX = {
 export default function App() {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [visibleRegion, setVisibleRegion] = useState(null);
+
+  const [startStop, setStartStop] = useState(null);
+  const [endStop, setEndStop] = useState(null);
+  const [pathCoords, setPathCoords] = useState([]);
 
   async function fetchStops() {
     setLoading(true);
@@ -33,12 +40,15 @@ export default function App() {
       if (!res.ok) throw new Error("HTTP " + res.status);
       const json = await res.json();
       const parsed = (json.elements || [])
-        .filter(e => e.type === "node" && e.lat && e.lon)
-        .map(e => ({
-          id: e.id,
+        .filter((e) => e.type === "node" && e.lat && e.lon)
+        .map((e) => ({
+          id: String(e.id),
           lat: e.lat,
           lon: e.lon,
-          name: (e.tags && (e.tags.name || e.tags.ref)) ? (e.tags.name || e.tags.ref) : "Parada de ônibus",
+          name:
+            e.tags && (e.tags.name || e.tags.ref)
+              ? e.tags.name || e.tags.ref
+              : "Parada de ônibus",
         }));
       setStops(parsed);
     } catch (err) {
@@ -49,43 +59,122 @@ export default function App() {
     }
   }
 
+  // Chama OSRM para calcular rota viária entre duas paradas
+  async function fetchRoute(start, end) {
+    try {
+      const url = `${OSRM_API}/${start.lon},${start.lat};${end.lon},${end.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const json = await res.json();
+      if (json.routes && json.routes.length > 0) {
+        const coords = json.routes[0].geometry.coordinates.map((c) => ({
+          latitude: c[1],
+          longitude: c[0],
+        }));
+        setPathCoords(coords);
+      } else {
+        Alert.alert("Aviso", "Nenhuma rota encontrada.");
+      }
+    } catch (err) {
+      console.error("Erro OSRM:", err);
+      Alert.alert("Erro", "Falha ao calcular rota.");
+    }
+  }
+
   useEffect(() => {
     fetchStops();
   }, []);
+
+  // Calcula rota sempre que origem e destino são definidos
+  useEffect(() => {
+    if (startStop && endStop) {
+      fetchRoute(startStop, endStop);
+    }
+  }, [startStop, endStop]);
 
   return (
     <View style={styles.container}>
       <MapView
         style={styles.map}
         initialRegion={{
-          latitude: -15.792, // centro de Brasília
+          latitude: -15.792,
           longitude: -47.8825,
           latitudeDelta: 0.08,
           longitudeDelta: 0.08,
         }}
+        onRegionChangeComplete={(region) => setVisibleRegion(region)}
       >
-        {/* Carto basemap (livre p/ apps) */}
         <UrlTile
           urlTemplate="https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}{r}.png"
           maximumZ={19}
         />
 
-       {stops.map(s => (
-  <Marker
-    key={String(s.id)}
-    coordinate={{ latitude: s.lat, longitude: s.lon }}
-    title={s.name}
-  >
-    <View style={styles.busStopMarker} />
-  </Marker>
-))}
+        {/* Marcadores */}
+        {visibleRegion &&
+          visibleRegion.latitudeDelta < 0.03 &&
+          stops
+            .filter(
+              (s) =>
+                s.lat <
+                  visibleRegion.latitude + visibleRegion.latitudeDelta / 2 &&
+                s.lat >
+                  visibleRegion.latitude - visibleRegion.latitudeDelta / 2 &&
+                s.lon <
+                  visibleRegion.longitude + visibleRegion.longitudeDelta / 2 &&
+                s.lon >
+                  visibleRegion.longitude - visibleRegion.longitudeDelta / 2
+            )
+            .map((s) => (
+              <Marker
+                key={s.id}
+                coordinate={{ latitude: s.lat, longitude: s.lon }}
+                title={s.name}
+                pinColor={
+                  startStop?.id === s.id
+                    ? "green"
+                    : endStop?.id === s.id
+                    ? "red"
+                    : "blue"
+                }
+                onPress={() => {
+                  if (!startStop) setStartStop(s);
+                  else if (!endStop) setEndStop(s);
+                  else {
+                    setStartStop(s);
+                    setEndStop(null);
+                    setPathCoords([]);
+                  }
+                }}
+              />
+            ))}
 
+        {/* Polyline da rota */}
+        {pathCoords.length > 0 && (
+          <Polyline
+            coordinates={pathCoords}
+            strokeColor="#0b63d6"
+            strokeWidth={4}
+          />
+        )}
       </MapView>
 
       <View style={styles.panel}>
-        <Text style={styles.info}>Paradas carregadas: {stops.length}</Text>
-        <TouchableOpacity style={styles.btn} onPress={fetchStops}>
-          <Text style={styles.btnText}>{loading ? "Carregando..." : "Recarregar"}</Text>
+        <Text style={styles.info}>
+          {loading
+            ? "Carregando paradas..."
+            : `Paradas carregadas: ${stops.length}`}
+        </Text>
+        {startStop && <Text>Origem: {startStop.name}</Text>}
+        {endStop && <Text>Destino: {endStop.name}</Text>}
+        <TouchableOpacity
+          style={styles.btn}
+          onPress={() => {
+            setStartStop(null);
+            setEndStop(null);
+            setPathCoords([]);
+          }}
+        >
+          <Text style={styles.btnText}>Limpar rota</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -103,24 +192,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.95)",
     padding: 10,
     borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    flexDirection: "column",
+    alignItems: "flex-start",
     elevation: 4,
   },
   info: { fontSize: 14, color: "#222" },
   btn: {
+    marginTop: 6,
     backgroundColor: "#0b63d6",
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 6,
   },
   btnText: { color: "#fff", fontWeight: "600" },
-  busStopMarker: {
-  width: 10,
-  height: 10,
-  borderRadius: 5,
-  backgroundColor: "#666", // cinza
-},
-
 });
