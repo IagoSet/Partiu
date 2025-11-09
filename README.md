@@ -117,13 +117,30 @@ const result = await calculateStopRoute(stops, start.id, end.id, {
 
 ## 🐛 Problemas Comuns
 
+### ❌ Erro 504 - Overpass API Timeout
+
+**Causa**: Servidor Overpass sobrecarregado ou lento
+
+**Soluções implementadas:**
+- ✅ Sistema de **fallback automático** com 3 servidores diferentes
+- ✅ Timeout de 30 segundos por tentativa
+- ✅ Botão "Tentar Novamente" na interface
+
+**O que fazer:**
+1. Aguarde alguns segundos e o app tentará outro servidor automaticamente
+2. Use o botão "🔄 Tentar Novamente" se necessário
+3. Verifique sua conexão com internet
+4. Servidores Overpass têm mais tráfego durante horários comerciais europeus
+
+### 🌐 Outros Problemas
+
 | Problema | Solução |
 |----------|---------|
 | **Tiles não carregam** | Use Carto/Maptiler (OSM oficial bloqueia apps) |
-| **Overpass erro 429** | Rate limit — aguarde ou use instância própria |
 | **Rota não calcula** | Verifique console — pode ser paradas muito distantes |
 | **Expo não conecta** | Celular e PC na mesma rede Wi-Fi |
 | **Cache/bugs** | `expo start -c` para limpar cache |
+| **App travado** | Force close e reinicie o Expo |
 
 ## 📚 Para Apresentação Acadêmica
 
