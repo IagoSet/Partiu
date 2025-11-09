@@ -13,10 +13,10 @@ const OVERPASS_SERVERS = [
 
 // Bounding Box do Plano Piloto
 const BBOX = {
-  south: -15.8808,
-  west: -48.1064,
-  north: -15.5662,
-  east: -47.7493,
+  south: -15.82,   // Região menor (Asa Sul + Centro)
+  west: -47.95,
+  north: -15.75,
+  east: -47.85,
 };
 
 export default function App() {
@@ -128,8 +128,8 @@ export default function App() {
         start.id,
         end.id,
         { 
-          maxNeighbors: 20,           // Aumentado para 12 vizinhos
-          delayBetweenRequests: 50,
+          maxNeighbors: 12,           // Aumentado para 12 vizinhos
+          delayBetweenRequests: 150,
           useRealDistances: false     // USA DISTÂNCIAS REAIS DE RUA! 🔥
         }
       );
