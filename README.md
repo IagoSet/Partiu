@@ -1,8 +1,8 @@
-Resumo
+# Resumo
 
 Este projeto (Expo / React Native) carrega paradas de ônibus do OpenStreetMap (via Overpass API) e exibe no mapa usando tiles do Carto (base OSM). Esta versão é uma tela única: mapa + marcadores (bolinha cinza).
 
-Pré-requisitos
+## Pré-requisitos:
 
 Node.js (recomendo >=16)
 
@@ -15,27 +15,28 @@ npm install -g expo-cli
 
 Celular com Expo Go instalado (Android ou iOS) ou emulador Android/iOS configurado.
 
-Passos para rodar (clone → rodar)
+# Passos para rodar (clone → rodar)
 
 Clone o repositório:
 
 git clone (https://github.com/IagoSet/Partiu)
+
 cd Partiu
 
 
-Instale dependências:
+## Instale dependências:
 
 npm install
-# ou
+ ou
 yarn install
 
 
-Inicie o servidor do Expo:
+## Inicie o servidor do Expo:
 
-expo start
+npx expo start
 
 
-Abra o projeto no seu celular:
+## Abra o projeto no seu celular:
 
 Abra o app Expo Go e escaneie o QR code exibido no terminal/na página do Expo.
 
@@ -43,7 +44,7 @@ Ou use um emulador (clicando em “Run on Android device/emulator” ou “Run o
 
 Pronto — o app deve abrir e carregar as paradas do Plano Piloto.
 
-Arquivos importantes
+# Arquivos importantes
 
 App.js — tela principal (mapa + query Overpass + markers).
 
@@ -51,7 +52,7 @@ package.json — dependências (expo, react-native-maps, etc.).
 
 README.md — este arquivo.
 
-Como o app funciona (curto)
+## Como o app funciona (curto)
 
 Paradas: buscadas via Overpass API usando uma bounding box do Plano Piloto.
 
@@ -72,7 +73,7 @@ Exemplo Maptiler:
 
 Se usar Maptiler coloque a chave em .env (não commit) e carregue com expo-constants/react-native-dotenv.
 
-Ajustes úteis
+## Ajustes úteis
 
 Aumentar a área de busca: ajuste SEARCH_RADIUS_METERS ou a BBOX em App.js.
 
@@ -80,7 +81,7 @@ Se quiser diferenciar tipos (highway=bus_stop vs public_transport=platform), a q
 
 Para implementar busca por nome, adicione um TextInput e filtre o array stops.
 
-Problemas comuns & soluções
+## Problemas comuns & soluções
 
 Tiles não carregam / 403: provedor OSM oficial bloqueia apps. Troque para Carto/Maptiler ou outro provedor autorizado.
 
@@ -92,7 +93,7 @@ Cache/bugs no metro bundler: reinicie com:
 
 expo start -c
 
-Boas práticas para produção
+## Boas práticas para produção
 
 Não usar servidores públicos de tiles/OSM em escala; obtenha plano comercial ou hospede seu próprio tile server.
 
@@ -100,7 +101,7 @@ Para rotas (direções) não use o servidor demo do OSRM em produção — hospe
 
 Cache local dos dados OSM para reduzir chamadas à Overpass.
 
-Licença e atribuições
+## Licença e atribuições
 
 Dados de mapas: © OpenStreetMap contributors.
 
