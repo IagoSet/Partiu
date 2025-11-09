@@ -1,11 +1,10 @@
-// App.js
+// App.js - Versão com Rotas de Rua
 import React, { useEffect, useState } from "react";
-import { StyleSheet, View, Text, Alert, TouchableOpacity } from "react-native";
+import { StyleSheet, View, Text, Alert, TouchableOpacity, ActivityIndicator } from "react-native";
 import MapView, { Marker, UrlTile, Polyline } from "react-native-maps";
+import { calculateStopRoute } from './GraphRouterDynamic';
 
 const OVERPASS_API = "https://overpass-api.de/api/interpreter";
-// Servidor público OSRM (cuidado: tem limite de uso, para produção é melhor hospedar o seu)
-const OSRM_API = "https://router.project-osrm.org/route/v1/driving";
 
 // Bounding Box do Plano Piloto
 const BBOX = {
@@ -18,11 +17,13 @@ const BBOX = {
 export default function App() {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [calculating, setCalculating] = useState(false);
   const [visibleRegion, setVisibleRegion] = useState(null);
 
   const [startStop, setStartStop] = useState(null);
   const [endStop, setEndStop] = useState(null);
   const [pathCoords, setPathCoords] = useState([]);
+  const [routeInfo, setRouteInfo] = useState(null);
 
   async function fetchStops() {
     setLoading(true);
@@ -51,33 +52,69 @@ export default function App() {
               : "Parada de ônibus",
         }));
       setStops(parsed);
+      console.log(`${parsed.length} paradas carregadas com sucesso`);
     } catch (err) {
       console.error("Erro Overpass:", err);
-      Alert.alert("Erro", "Falha ao buscar paradas.");
+      Alert.alert("Erro", "Falha ao buscar paradas. Tente novamente.");
     } finally {
       setLoading(false);
     }
   }
 
-  // Chama OSRM para calcular rota viária entre duas paradas
   async function fetchRoute(start, end) {
+    if (!start || !end) return;
+    
+    setCalculating(true);
+    setPathCoords([]);
+    setRouteInfo(null);
+
     try {
-      const url = `${OSRM_API}/${start.lon},${start.lat};${end.lon},${end.lat}?overview=full&geometries=geojson`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const json = await res.json();
-      if (json.routes && json.routes.length > 0) {
-        const coords = json.routes[0].geometry.coordinates.map((c) => ({
-          latitude: c[1],
-          longitude: c[0],
-        }));
-        setPathCoords(coords);
+      console.log(`Iniciando cálculo de rota: ${start.name} → ${end.name}`);
+      
+      // Calcula a rota seguindo ruas reais
+      const result = await calculateStopRoute(
+        stops,
+        start.id,
+        end.id,
+        { 
+          maxNeighbors: 8,
+          delayBetweenRequests: 150 // delay em ms entre requisições ao OSRM
+        }
+      );
+
+      if (result.coordinates.length > 0) {
+        setPathCoords(result.coordinates);
+        
+        // Formata duração em minutos
+        const durationMin = Math.round(result.duration / 60);
+        
+        setRouteInfo({
+          stops: result.stopsCount,
+          distance: (result.distance / 1000).toFixed(2), // em km
+          duration: durationMin,
+          points: result.coordinates.length
+        });
+        
+        console.log(
+          `Rota calculada: ${result.stopsCount} paradas, ` +
+          `${(result.distance / 1000).toFixed(2)}km, ` +
+          `${durationMin}min, ` +
+          `${result.coordinates.length} pontos de geometria`
+        );
       } else {
-        Alert.alert("Aviso", "Nenhuma rota encontrada.");
+        Alert.alert(
+          "Rota não encontrada", 
+          "Não foi possível encontrar uma rota entre as paradas selecionadas. Tente paradas mais próximas."
+        );
       }
-    } catch (err) {
-      console.error("Erro OSRM:", err);
-      Alert.alert("Erro", "Falha ao calcular rota.");
+    } catch (error) {
+      console.error("Erro ao calcular rota:", error);
+      Alert.alert(
+        "Erro",
+        "Ocorreu um erro ao calcular a rota. Verifique sua conexão e tente novamente."
+      );
+    } finally {
+      setCalculating(false);
     }
   }
 
@@ -85,12 +122,44 @@ export default function App() {
     fetchStops();
   }, []);
 
-  // Calcula rota sempre que origem e destino são definidos
+  // Calcula rota quando origem e destino são definidos
   useEffect(() => {
     if (startStop && endStop) {
       fetchRoute(startStop, endStop);
+    } else {
+      setPathCoords([]);
+      setRouteInfo(null);
     }
   }, [startStop, endStop]);
+
+  function handleMarkerPress(stop) {
+    if (!startStop) {
+      setStartStop(stop);
+      console.log(`Origem definida: ${stop.name}`);
+    } else if (!endStop) {
+      if (stop.id === startStop.id) {
+        Alert.alert("Aviso", "Selecione uma parada diferente como destino.");
+        return;
+      }
+      setEndStop(stop);
+      console.log(`Destino definido: ${stop.name}`);
+    } else {
+      // Reinicia a seleção
+      setStartStop(stop);
+      setEndStop(null);
+      setPathCoords([]);
+      setRouteInfo(null);
+      console.log(`Seleção reiniciada. Nova origem: ${stop.name}`);
+    }
+  }
+
+  function clearRoute() {
+    setStartStop(null);
+    setEndStop(null);
+    setPathCoords([]);
+    setRouteInfo(null);
+    console.log("Rota limpa");
+  }
 
   return (
     <View style={styles.container}>
@@ -110,72 +179,110 @@ export default function App() {
         />
 
         {/* Marcadores */}
-        {visibleRegion &&
-          visibleRegion.latitudeDelta < 0.03 &&
-          stops
-            .filter(
-              (s) =>
-                s.lat <
-                  visibleRegion.latitude + visibleRegion.latitudeDelta / 2 &&
-                s.lat >
-                  visibleRegion.latitude - visibleRegion.latitudeDelta / 2 &&
-                s.lon <
-                  visibleRegion.longitude + visibleRegion.longitudeDelta / 2 &&
-                s.lon >
-                  visibleRegion.longitude - visibleRegion.longitudeDelta / 2
-            )
-            .map((s) => (
-              <Marker
-                key={s.id}
-                coordinate={{ latitude: s.lat, longitude: s.lon }}
-                title={s.name}
-                pinColor={
-                  startStop?.id === s.id
-                    ? "green"
-                    : endStop?.id === s.id
-                    ? "red"
-                    : "blue"
-                }
-                onPress={() => {
-                  if (!startStop) setStartStop(s);
-                  else if (!endStop) setEndStop(s);
-                  else {
-                    setStartStop(s);
-                    setEndStop(null);
-                    setPathCoords([]);
-                  }
-                }}
-              />
-            ))}
+        {stops.map((s) => (
+          <Marker
+            key={s.id}
+            coordinate={{ latitude: s.lat, longitude: s.lon }}
+            title={s.name}
+            description={
+              startStop?.id === s.id 
+                ? "🟢 Origem" 
+                : endStop?.id === s.id 
+                ? "🔴 Destino" 
+                : "Parada de ônibus"
+            }
+            pinColor={
+              startStop?.id === s.id
+                ? "green"
+                : endStop?.id === s.id
+                ? "red"
+                : "blue"
+            }
+            onPress={() => handleMarkerPress(s)}
+          />
+        ))}
 
-        {/* Polyline da rota */}
+        {/* Polyline da rota seguindo ruas */}
         {pathCoords.length > 0 && (
           <Polyline
             coordinates={pathCoords}
             strokeColor="#0b63d6"
-            strokeWidth={4}
+            strokeWidth={5}
+            lineJoin="round"
+            lineCap="round"
           />
         )}
       </MapView>
 
+      {/* Painel de informações */}
       <View style={styles.panel}>
         <Text style={styles.info}>
           {loading
             ? "Carregando paradas..."
-            : `Paradas carregadas: ${stops.length}`}
+            : `${stops.length} paradas disponíveis`}
         </Text>
-        {startStop && <Text>Origem: {startStop.name}</Text>}
-        {endStop && <Text>Destino: {endStop.name}</Text>}
-        <TouchableOpacity
-          style={styles.btn}
-          onPress={() => {
-            setStartStop(null);
-            setEndStop(null);
-            setPathCoords([]);
-          }}
-        >
-          <Text style={styles.btnText}>Limpar rota</Text>
-        </TouchableOpacity>
+        
+        {calculating && (
+          <View style={styles.calculatingRow}>
+            <ActivityIndicator size="small" color="#0b63d6" />
+            <Text style={styles.calculatingText}>
+              Calculando rota nas ruas...
+            </Text>
+          </View>
+        )}
+        
+        {startStop && (
+          <View style={styles.stopRow}>
+            <Text style={styles.stopIcon}>🟢</Text>
+            <Text style={styles.routeText} numberOfLines={1}>
+              {startStop.name}
+            </Text>
+          </View>
+        )}
+        
+        {endStop && (
+          <View style={styles.stopRow}>
+            <Text style={styles.stopIcon}>🔴</Text>
+            <Text style={styles.routeText} numberOfLines={1}>
+              {endStop.name}
+            </Text>
+          </View>
+        )}
+        
+        {routeInfo && (
+          <View style={styles.routeInfoContainer}>
+            <Text style={styles.routeInfoLabel}>Detalhes da rota:</Text>
+            <Text style={styles.routeInfoText}>
+              📍 {routeInfo.stops} paradas • 
+              🚗 {routeInfo.distance} km • 
+              ⏱️ ~{routeInfo.duration} min
+            </Text>
+          </View>
+        )}
+        
+        {!startStop && !calculating && (
+          <Text style={styles.hint}>
+            👆 Toque em uma parada para definir a origem
+          </Text>
+        )}
+        
+        {startStop && !endStop && !calculating && (
+          <Text style={styles.hint}>
+            👆 Toque em outra parada para definir o destino
+          </Text>
+        )}
+        
+        {(startStop || endStop) && (
+          <TouchableOpacity
+            style={[styles.btn, calculating && styles.btnDisabled]}
+            onPress={clearRoute}
+            disabled={calculating}
+          >
+            <Text style={styles.btnText}>
+              {calculating ? "Calculando..." : "Limpar rota"}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -189,20 +296,93 @@ const styles = StyleSheet.create({
     bottom: 16,
     left: 12,
     right: 12,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    padding: 10,
-    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.98)",
+    padding: 14,
+    borderRadius: 12,
     flexDirection: "column",
     alignItems: "flex-start",
-    elevation: 4,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
   },
-  info: { fontSize: 14, color: "#222" },
-  btn: {
+  info: { 
+    fontSize: 13, 
+    color: "#666",
+    fontWeight: "500",
+    marginBottom: 6,
+  },
+  stopRow: {
+    flexDirection: "row",
+    alignItems: "center",
     marginTop: 6,
-    backgroundColor: "#0b63d6",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    width: "100%",
   },
-  btnText: { color: "#fff", fontWeight: "600" },
+  stopIcon: {
+    fontSize: 16,
+    marginRight: 8,
+  },
+  routeText: {
+    fontSize: 14,
+    color: "#222",
+    fontWeight: "500",
+    flex: 1,
+  },
+  routeInfoContainer: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#e0e0e0",
+    width: "100%",
+  },
+  routeInfoLabel: {
+    fontSize: 12,
+    color: "#888",
+    marginBottom: 4,
+    fontWeight: "600",
+  },
+  routeInfoText: {
+    fontSize: 13,
+    color: "#0b63d6",
+    fontWeight: "600",
+  },
+  hint: {
+    fontSize: 12,
+    color: "#999",
+    fontStyle: "italic",
+    marginTop: 8,
+  },
+  calculatingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 8,
+    backgroundColor: "#f0f7ff",
+    padding: 8,
+    borderRadius: 6,
+    width: "100%",
+  },
+  calculatingText: {
+    fontSize: 13,
+    color: "#0b63d6",
+    marginLeft: 8,
+    fontWeight: "500",
+  },
+  btn: {
+    marginTop: 12,
+    backgroundColor: "#0b63d6",
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 8,
+    alignSelf: "stretch",
+    alignItems: "center",
+  },
+  btnDisabled: {
+    backgroundColor: "#a0c4e8",
+  },
+  btnText: { 
+    color: "#fff", 
+    fontWeight: "600",
+    fontSize: 14,
+  },
 });
