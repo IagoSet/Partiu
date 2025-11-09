@@ -128,9 +128,9 @@ export default function App() {
         start.id,
         end.id,
         { 
-          maxNeighbors: 12,           // Aumentado para 12 vizinhos
-          delayBetweenRequests: 150,
-          useRealDistances: true      // USA DISTÂNCIAS REAIS DE RUA! 🔥
+          maxNeighbors: 20,           // Aumentado para 12 vizinhos
+          delayBetweenRequests: 50,
+          useRealDistances: false     // USA DISTÂNCIAS REAIS DE RUA! 🔥
         }
       );
 
