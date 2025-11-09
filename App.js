@@ -4,7 +4,12 @@ import { StyleSheet, View, Text, Alert, TouchableOpacity, ActivityIndicator } fr
 import MapView, { Marker, UrlTile, Polyline } from "react-native-maps";
 import { calculateStopRoute } from './GraphRouterDynamic';
 
-const OVERPASS_API = "https://overpass-api.de/api/interpreter";
+// Lista de servidores Overpass (fallback automático)
+const OVERPASS_SERVERS = [
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.openstreetmap.ru/api/interpreter",
+];
 
 // Bounding Box do Plano Piloto
 const BBOX = {
@@ -18,6 +23,7 @@ export default function App() {
   const [stops, setStops] = useState([]);
   const [loading, setLoading] = useState(false);
   const [calculating, setCalculating] = useState(false);
+  const [buildingGraph, setBuildingGraph] = useState(false);
   const [visibleRegion, setVisibleRegion] = useState(null);
 
   const [startStop, setStartStop] = useState(null);
@@ -27,44 +33,89 @@ export default function App() {
 
   async function fetchStops() {
     setLoading(true);
+    
+    // Query simplificada e otimizada
     const q = `
-      [out:json][timeout:25];
+      [out:json][timeout:60];
       (
         node["highway"="bus_stop"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
         node["public_transport"="platform"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
       );
       out body;
     `;
-    try {
-      const url = OVERPASS_API + "?data=" + encodeURIComponent(q);
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const json = await res.json();
-      const parsed = (json.elements || [])
-        .filter((e) => e.type === "node" && e.lat && e.lon)
-        .map((e) => ({
-          id: String(e.id),
-          lat: e.lat,
-          lon: e.lon,
-          name:
-            e.tags && (e.tags.name || e.tags.ref)
-              ? e.tags.name || e.tags.ref
-              : "Parada de ônibus",
-        }));
-      setStops(parsed);
-      console.log(`${parsed.length} paradas carregadas com sucesso`);
-    } catch (err) {
-      console.error("Erro Overpass:", err);
-      Alert.alert("Erro", "Falha ao buscar paradas. Tente novamente.");
-    } finally {
-      setLoading(false);
+    
+    // Tenta cada servidor até conseguir
+    let lastError = null;
+    for (let i = 0; i < OVERPASS_SERVERS.length; i++) {
+      const server = OVERPASS_SERVERS[i];
+      console.log(`Tentando servidor ${i + 1}/${OVERPASS_SERVERS.length}: ${server}`);
+      
+      try {
+        const url = server + "?data=" + encodeURIComponent(q);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        
+        const res = await fetch(url, { 
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+          }
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        
+        const json = await res.json();
+        const parsed = (json.elements || [])
+          .filter((e) => e.type === "node" && e.lat && e.lon)
+          .map((e) => ({
+            id: String(e.id),
+            lat: e.lat,
+            lon: e.lon,
+            name:
+              e.tags && (e.tags.name || e.tags.ref)
+                ? e.tags.name || e.tags.ref
+                : "Parada de ônibus",
+          }));
+        
+        setStops(parsed);
+        console.log(`✅ ${parsed.length} paradas carregadas com sucesso do servidor ${i + 1}`);
+        setLoading(false);
+        return; // Sucesso! Sai da função
+        
+      } catch (err) {
+        console.warn(`❌ Falha no servidor ${i + 1}:`, err.message);
+        lastError = err;
+        
+        // Se não for o último servidor, aguarda um pouco antes de tentar o próximo
+        if (i < OVERPASS_SERVERS.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
     }
+    
+    // Se chegou aqui, todos os servidores falharam
+    console.error("Todos os servidores Overpass falharam:", lastError);
+    Alert.alert(
+      "Erro ao carregar paradas", 
+      "Não foi possível conectar aos servidores do OpenStreetMap. Verifique sua conexão e tente novamente em alguns minutos.\n\n" +
+      "Erro: " + (lastError?.message || "Desconhecido"),
+      [
+        { text: "Tentar Novamente", onPress: () => fetchStops() },
+        { text: "Cancelar", style: "cancel" }
+      ]
+    );
+    setLoading(false);
   }
 
   async function fetchRoute(start, end) {
     if (!start || !end) return;
     
     setCalculating(true);
+    setBuildingGraph(true);
     setPathCoords([]);
     setRouteInfo(null);
 
@@ -77,10 +128,13 @@ export default function App() {
         start.id,
         end.id,
         { 
-          maxNeighbors: 8,
-          delayBetweenRequests: 150 // delay em ms entre requisições ao OSRM
+          maxNeighbors: 12,           // Aumentado para 12 vizinhos
+          delayBetweenRequests: 150,
+          useRealDistances: true      // USA DISTÂNCIAS REAIS DE RUA! 🔥
         }
       );
+
+      setBuildingGraph(false);
 
       if (result.coordinates.length > 0) {
         setPathCoords(result.coordinates);
@@ -115,6 +169,7 @@ export default function App() {
       );
     } finally {
       setCalculating(false);
+      setBuildingGraph(false);
     }
   }
 
@@ -178,29 +233,39 @@ export default function App() {
           maximumZ={19}
         />
 
-        {/* Marcadores */}
-        {stops.map((s) => (
-          <Marker
-            key={s.id}
-            coordinate={{ latitude: s.lat, longitude: s.lon }}
-            title={s.name}
-            description={
-              startStop?.id === s.id 
-                ? "🟢 Origem" 
-                : endStop?.id === s.id 
-                ? "🔴 Destino" 
-                : "Parada de ônibus"
+        {/* Marcadores - Filtra por zoom mas sempre mostra origem/destino */}
+        {stops
+          .filter((s) => {
+            // Sempre mostra origem e destino, independente do zoom
+            if (startStop?.id === s.id || endStop?.id === s.id) {
+              return true;
             }
-            pinColor={
-              startStop?.id === s.id
-                ? "green"
-                : endStop?.id === s.id
-                ? "red"
-                : "blue"
-            }
-            onPress={() => handleMarkerPress(s)}
-          />
-        ))}
+            // Outras paradas: só mostra com zoom suficiente
+            return !visibleRegion || visibleRegion.latitudeDelta < 0.03;
+          })
+          .map((s) => (
+            <Marker
+              key={s.id}
+              coordinate={{ latitude: s.lat, longitude: s.lon }}
+              title={s.name}
+              description={
+                startStop?.id === s.id 
+                  ? "🟢 Origem" 
+                  : endStop?.id === s.id 
+                  ? "🔴 Destino" 
+                  : "Parada de ônibus"
+              }
+              pinColor={
+                startStop?.id === s.id
+                  ? "green"
+                  : endStop?.id === s.id
+                  ? "red"
+                  : "blue"
+              }
+              onPress={() => handleMarkerPress(s)}
+            />
+          ))
+        }
 
         {/* Polyline da rota seguindo ruas */}
         {pathCoords.length > 0 && (
@@ -216,17 +281,31 @@ export default function App() {
 
       {/* Painel de informações */}
       <View style={styles.panel}>
-        <Text style={styles.info}>
-          {loading
-            ? "Carregando paradas..."
-            : `${stops.length} paradas disponíveis`}
-        </Text>
+        <View style={styles.headerRow}>
+          <Text style={styles.info}>
+            {loading
+              ? "Carregando paradas..."
+              : stops.length > 0
+              ? `${stops.length} paradas disponíveis`
+              : "Nenhuma parada carregada"}
+          </Text>
+          {!loading && stops.length === 0 && (
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={fetchStops}
+            >
+              <Text style={styles.retryText}>🔄 Tentar Novamente</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         
         {calculating && (
           <View style={styles.calculatingRow}>
             <ActivityIndicator size="small" color="#0b63d6" />
             <Text style={styles.calculatingText}>
-              Calculando rota nas ruas...
+              {buildingGraph 
+                ? "Construindo grafo com distâncias reais..." 
+                : "Calculando rota nas ruas..."}
             </Text>
           </View>
         )}
@@ -307,11 +386,31 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4.65,
   },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
+    marginBottom: 6,
+  },
   info: { 
     fontSize: 13, 
     color: "#666",
     fontWeight: "500",
-    marginBottom: 6,
+    flex: 1,
+  },
+  retryBtn: {
+    backgroundColor: "#f0f7ff",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#0b63d6",
+  },
+  retryText: {
+    fontSize: 11,
+    color: "#0b63d6",
+    fontWeight: "600",
   },
   stopRow: {
     flexDirection: "row",

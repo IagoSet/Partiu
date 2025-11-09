@@ -1,4 +1,51 @@
-// GraphRouterDynamic.js - Versão com Rotas de Rua
+// Constrói o grafo conectando cada parada às N mais próximas (com Haversine)
+function buildStopGraphHaversine(stops, maxNeighbors = 12) {
+  const graph = {};
+  
+  console.log(`Construindo grafo com ${stops.length} paradas...`);
+
+  // Inicializa o grafo
+  stops.forEach(stop => {
+    graph[stop.id] = {};
+  });
+
+  // Para cada parada, encontra as N mais próximas
+  stops.forEach((stopA, index) => {
+    const distances = [];
+    
+    stops.forEach(stopB => {
+      if (stopA.id !== stopB.id) {
+        const dist = haversineDistance(stopA.lat, stopA.lon, stopB.lat, stopB.lon);
+        // Filtra apenas paradas num raio de 1.5km
+        if (dist <= 1500) {
+          distances.push({ id: stopB.id, dist });
+        }
+      }
+    });
+
+    // Ordena por distância e pega as N mais próximas
+    distances.sort((a, b) => a.dist - b.dist);
+    const nearest = distances.slice(0, maxNeighbors);
+
+    // Adiciona arestas bidirecionais
+    nearest.forEach(neighbor => {
+      graph[stopA.id][neighbor.id] = neighbor.dist;
+      // Adiciona aresta reversa se ainda não existe
+      if (!graph[neighbor.id]) graph[neighbor.id] = {};
+      if (!graph[neighbor.id][stopA.id]) {
+        graph[neighbor.id][stopA.id] = neighbor.dist;
+      }
+    });
+
+    // Log de progresso
+    if ((index + 1) % 50 === 0) {
+      console.log(`Processadas ${index + 1}/${stops.length} paradas`);
+    }
+  });
+
+  console.log("Grafo construído com sucesso!");
+  return graph;
+}// GraphRouterDynamic.js - Versão com Rotas de Rua
 
 const OSRM_API = "https://router.project-osrm.org/route/v1/driving";
 
@@ -84,48 +131,102 @@ function dijkstra(graph, startNodeId, endNodeId) {
   return [];
 }
 
-// Constrói o grafo conectando cada parada às N mais próximas
-function buildStopGraphHaversine(stops, maxNeighbors = 8) {
+// Função para buscar distância real de rua via OSRM (com cache)
+const distanceCache = new Map();
+
+async function getRealStreetDistance(stopA, stopB) {
+  const cacheKey = `${stopA.id}-${stopB.id}`;
+  
+  if (distanceCache.has(cacheKey)) {
+    return distanceCache.get(cacheKey);
+  }
+
+  const url = `${OSRM_API}/${stopA.lon},${stopA.lat};${stopB.lon},${stopB.lat}?overview=false`;
+  
+  try {
+    const res = await fetch(url);
+    const json = await res.json();
+
+    if (json.routes && json.routes.length > 0) {
+      const distance = json.routes[0].distance; // distância real em metros
+      distanceCache.set(cacheKey, distance);
+      distanceCache.set(`${stopB.id}-${stopA.id}`, distance); // bidirecional
+      return distance;
+    }
+    return Infinity;
+  } catch (error) {
+    return Infinity;
+  }
+}
+
+// Constrói o grafo usando distâncias REAIS de rua
+async function buildStopGraphWithRealDistances(stops, maxNeighbors = 12) {
   const graph = {};
   
-  console.log(`Construindo grafo com ${stops.length} paradas...`);
+  console.log(`Construindo grafo com distâncias reais de ${stops.length} paradas...`);
 
   // Inicializa o grafo
   stops.forEach(stop => {
     graph[stop.id] = {};
   });
 
-  // Para cada parada, encontra as N mais próximas
-  stops.forEach((stopA, index) => {
+  // Para cada parada, encontra as N mais próximas em linha reta
+  const nearestNeighbors = {};
+  stops.forEach((stopA) => {
     const distances = [];
     
     stops.forEach(stopB => {
       if (stopA.id !== stopB.id) {
         const dist = haversineDistance(stopA.lat, stopA.lon, stopB.lat, stopB.lon);
-        distances.push({ id: stopB.id, dist });
+        // Filtra apenas paradas num raio de 1.5km (evita conexões absurdas)
+        if (dist <= 1500) {
+          distances.push({ stop: stopB, straightDist: dist });
+        }
       }
     });
 
     // Ordena por distância e pega as N mais próximas
-    distances.sort((a, b) => a.dist - b.dist);
-    const nearest = distances.slice(0, maxNeighbors);
-
-    // Adiciona arestas bidirecionais
-    nearest.forEach(neighbor => {
-      graph[stopA.id][neighbor.id] = neighbor.dist;
-      // Adiciona aresta reversa se ainda não existe
-      if (!graph[neighbor.id][stopA.id]) {
-        graph[neighbor.id][stopA.id] = neighbor.dist;
-      }
-    });
-
-    // Log de progresso
-    if ((index + 1) % 50 === 0) {
-      console.log(`Processadas ${index + 1}/${stops.length} paradas`);
-    }
+    distances.sort((a, b) => a.straightDist - b.straightDist);
+    nearestNeighbors[stopA.id] = distances.slice(0, maxNeighbors);
   });
 
-  console.log("Grafo construído com sucesso!");
+  // Busca distâncias reais de rua para os vizinhos identificados
+  let processed = 0;
+  const total = Object.keys(nearestNeighbors).length;
+  
+  for (const stopAId in nearestNeighbors) {
+    const stopA = stops.find(s => s.id === stopAId);
+    const neighbors = nearestNeighbors[stopAId];
+    
+    // Processa em lotes pequenos para evitar rate limit
+    for (let i = 0; i < neighbors.length; i += 3) {
+      const batch = neighbors.slice(i, i + 3);
+      
+      await Promise.all(
+        batch.map(async ({ stop: stopB }) => {
+          const realDist = await getRealStreetDistance(stopA, stopB);
+          
+          if (realDist !== Infinity) {
+            // Usa distância real de rua como peso
+            graph[stopA.id][stopB.id] = realDist;
+            // Bidirecional
+            if (!graph[stopB.id]) graph[stopB.id] = {};
+            graph[stopB.id][stopA.id] = realDist;
+          }
+        })
+      );
+      
+      // Delay para evitar rate limit
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    processed++;
+    if (processed % 20 === 0) {
+      console.log(`Processadas ${processed}/${total} paradas (${Math.round(processed/total*100)}%)`);
+    }
+  }
+
+  console.log("Grafo construído com distâncias reais!");
   return graph;
 }
 
@@ -232,7 +333,11 @@ async function fetchRouteSegments(stopPairs, delayMs = 150) {
 
 // Função principal de roteamento
 export async function calculateStopRoute(stops, startStopId, endStopId, options = {}) {
-  const { maxNeighbors = 8, delayBetweenRequests = 150 } = options;
+  const { 
+    maxNeighbors = 12, 
+    delayBetweenRequests = 150,
+    useRealDistances = true  // NOVO: usa distâncias reais de rua no grafo
+  } = options;
 
   if (!stops || stops.length === 0) {
     console.error("Lista de paradas vazia.");
@@ -242,8 +347,15 @@ export async function calculateStopRoute(stops, startStopId, endStopId, options 
   console.log(`Calculando rota de ${startStopId} para ${endStopId}...`);
 
   try {
-    // 1. Constrói o grafo usando distância Haversine
-    const graph = buildStopGraphHaversine(stops, maxNeighbors);
+    // 1. Constrói o grafo
+    let graph;
+    if (useRealDistances) {
+      console.log("Construindo grafo com distâncias REAIS de rua...");
+      graph = await buildStopGraphWithRealDistances(stops, maxNeighbors);
+    } else {
+      console.log("Construindo grafo com distâncias em linha reta...");
+      graph = buildStopGraphHaversine(stops, maxNeighbors);
+    }
 
     // 2. Executa Dijkstra para encontrar sequência de paradas
     const stopPathIds = dijkstra(graph, startStopId, endStopId);
