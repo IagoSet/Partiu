@@ -20,6 +20,7 @@ Celular com Expo Go instalado (Android ou iOS) ou emulador Android/iOS configura
 Clone o repositório:
 
 git clone (https://github.com/IagoSet/Partiu)
+
 cd Partiu
 
 
